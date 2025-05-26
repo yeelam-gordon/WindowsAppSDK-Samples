@@ -41,7 +41,7 @@ namespace WindowsAISample
             public static readonly Guid CLSID_ApplicationActivationManager = new Guid(CLSID_ApplicationActivationManager_String);
             public static readonly Guid CLSID_IApplicationActivationManager = new Guid(CLSID_IApplicationActivationManager_String);
 
-            [ComImport, Guid(CLSID_IApplicationActivationManager_String), InterfaceType(ComInterfaceType.InterfaceIsUnknown)]
+            [ComImport, Guid(CLSID_IApplicationActivationManager_String), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
             public interface IApplicationActivationManager
             {
                 // Activates the specified immersive application for the "Launch" contract, passing the provided arguments
