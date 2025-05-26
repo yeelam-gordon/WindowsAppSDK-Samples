@@ -18,7 +18,8 @@ namespace WindowsAISample
     /// </summary>
     public partial class App : Application
     {
-        private Window? mainWindow;
+        public static MainWindow? Window { get; private set; }
+        public static IntPtr WindowHandle { get; private set; }
 
         // All the interpolated native calls and DLLImports go here
         private static class NativeMethods
@@ -112,8 +113,9 @@ namespace WindowsAISample
             // If we are in the packaged process, then present the MainWindow
             if (IsPackagedProcess())
             {
-                mainWindow = new MainWindow();
-                mainWindow.Activate();
+                Window = new MainWindow();
+                Window.Activate();
+                WindowHandle = WinRT.Interop.WindowNative.GetWindowHandle(Window);
                 return;
             }
 

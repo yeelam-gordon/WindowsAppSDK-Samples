@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using WindowsAISample.ViewModels;
+using WindowsAISample.Pages;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System;
@@ -8,32 +10,45 @@ using System.Runtime.InteropServices;
 
 namespace WindowsAISample
 {
-    public partial class MainWindow : Window
+    /// <summary>
+    /// An empty window that can be used on its own or navigated to within a Frame.
+    /// </summary>
+    public sealed partial class MainWindow : Window
     {
         public MainWindow()
         {
-            this.InitializeComponent();
-            Title = "Windows AI Sample (Sparse WinUI)";
-            CheckPackageIdentity();
+            InitializeComponent();
+            Title = "Windows AI Samples (Sparse WinUI)";
+            rootFrame.DataContext = new CopilotRootViewModel();
+            rootFrame.Navigate(typeof(LanguageModelPage));
         }
 
-        private void CheckPackageIdentity()
+        private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
         {
-            if (IsPackagedProcess())
+            if (args.SelectedItemContainer != null)
             {
-                IdentityStatusTextBlock.Text = "Package Identity Status: Running with package identity";
-            }
-            else
-            {
-                IdentityStatusTextBlock.Text = "Package Identity Status: Running without package identity";
+                switch (args.SelectedItemContainer.Tag)
+                {
+                    case "LanguageModel":
+                        rootFrame.Navigate(typeof(LanguageModelPage));
+                        break;
+                    case "ImageScaler":
+                        rootFrame.Navigate(typeof(ImageScalerPage));
+                        break;
+                    case "ImageObjectExtractor":
+                        rootFrame.Navigate(typeof(ImageObjectExtractorPage));
+                        break;
+                    case "ImageDescription":
+                        rootFrame.Navigate(typeof(ImageDescriptionPage));
+                        break;
+                    case "TextRecognizer":
+                        rootFrame.Navigate(typeof(TextRecognizerPage));
+                        break;
+                }
             }
         }
 
-        private void TestIdentityButton_Click(object sender, RoutedEventArgs e)
-        {
-            CheckPackageIdentity();
-        }
-
+        // Keep the identity checking methods for reference
         private static bool IsPackagedProcess()
         {
             int length = 0;
