@@ -159,7 +159,7 @@ namespace WindowsAISample
         {
             // Activating the packaged process
             // We should already know our AUMID which depends on the AppxManifest we defined so this can be hardcoded here. 
-            string appUserModelId = "WindowsAISampleForWinUISparse!WindowsAISampleForWinUISparsePkg";
+            string appUserModelId = "WindowsAISampleForWinUISparse_k0t3h69cz9sxw!App";
             if (NativeMethods.CoCreateInstance(
                 NativeMethods.CLSID_ApplicationActivationManager,
                 IntPtr.Zero,

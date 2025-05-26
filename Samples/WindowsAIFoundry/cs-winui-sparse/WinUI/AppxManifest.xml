@@ -35,7 +35,7 @@
     <rescap:Capability Name="unvirtualizedResources"/>
   </Capabilities>
   <Applications>
-    <Application Id="WindowsAISampleForWinUISparsePkg" Executable="WindowsAISampleForWinUISparse.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+    <Application Id="App" Executable="WindowsAISampleForWinUISparse.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements
         DisplayName="WindowsAISampleForWinUISparsePkg"
         Description="WindowsAISampleForWinUISparsePkg"
