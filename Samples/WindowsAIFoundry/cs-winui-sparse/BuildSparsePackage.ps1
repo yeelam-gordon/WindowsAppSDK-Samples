@@ -1,8 +1,8 @@
 Param(
-    [Parameter(Mandatory=$true)]
-    [string]$Platform = "arm64",
-    [Parameter(Mandatory=$true)]
-    [string]$Configuration = "Release",
+    [Parameter(Mandatory=$false)]
+    [string]$Platform = "x64",
+    [Parameter(Mandatory=$false)]
+    [string]$Configuration = "Debug",
     [switch]$Clean
 )
 
@@ -25,7 +25,7 @@ if ($Clean) {
 
 function Get-UserPath
 {
-    $root = Join-Path (Get-Item $PSScriptRoot ).FullName "WinUI"
+    $root = Join-Path (Get-Item $PSScriptRoot).FullName "WinUI"
     $user = Join-Path $root '.user'
     if (-not(Test-Path -Path $user -PathType Container))
     {
@@ -75,12 +75,12 @@ function Install-Certificate
 
 function MakeSparsePackage
 {
-    $Solution = Join-Path (Get-Item $PSScriptRoot ).FullName 'WindowsAISampleForWinUI.sln'
+    $Solution = Join-Path (Get-Item $PSScriptRoot).FullName 'WindowsAISampleForWinUI.sln'
     $MSBuildPath = Get-Command MSBuild.exe | Select-Object -ExpandProperty Definition
-    & $MSBuildPath $Solution -m -p:Configuration=$Configuration -p:Platform=$Platform -p:BuildProjectReferences=true -p:RestorePackagesConfig=true -Restore -t:rebuild
+    & $MSBuildPath $Solution -m -p:Configuration=$Configuration -p:Platform=$Platform -p:BuildProjectReferences=true -p:RestorePackagesConfig=true -p:WindowsAppSDKSelfContained=true -Restore -t:rebuild
 
-    $manifests = Join-Path (Get-Item $PSScriptRoot ).FullName "WinUI\AppxManifest.xml"
-    $outputdir = Join-Path (Get-Item $PSScriptRoot ).FullName "WinUI\bin\$Platform\$Configuration"
+    $manifests = Join-Path (Get-Item $PSScriptRoot).FullName "WinUI\AppxManifest.xml"
+    $outputdir = Join-Path (Get-Item $PSScriptRoot).FullName "WinUI\bin\$Platform\$Configuration\net8.0-windows10.0.22621.0"
     $outputpath = Join-Path $outputdir "WindowsAISampleForWinUISparse.msix"
     $makeappxPath = (Get-Command -CommandType Application makeappx.exe | Select-Object -first 1).Source
     $outputargsInit = @(
@@ -88,7 +88,7 @@ function MakeSparsePackage
         '/v',
         '/o',
         '/d',
-        (Get-Item $PSScriptRoot ).FullName + "\WinUI",
+        (Join-Path (Get-Item $PSScriptRoot).FullName "WinUI"),
         '/p',
         $outputpath,
         '/nv'

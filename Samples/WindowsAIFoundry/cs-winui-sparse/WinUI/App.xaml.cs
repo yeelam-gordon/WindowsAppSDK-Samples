@@ -1,9 +1,10 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using Microsoft.UI.Xaml;
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -185,7 +186,7 @@ namespace WindowsAISample
                 PackageManager packageManager = new PackageManager();
                 
                 // Check if package is already registered
-                var packages = packageManager.FindPackagesForUser("", "WindowsAISampleForWinUISparse");
+                var packages = packageManager.FindPackagesForUser("", "WindowsAISampleForWinUISparse_k0t3h69cz9sxw");
                 int count = 0;
                 foreach (var package in packages)
                 {
