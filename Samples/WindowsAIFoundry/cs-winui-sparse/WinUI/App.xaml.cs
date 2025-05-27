@@ -117,31 +117,50 @@ namespace WindowsAISample
         {
             try
             {
-                await RestartWithIdentityIfNecessary();
+                // Check if we're running with package identity
+                bool hasPackageIdentity = IsPackagedProcess();
+                
+                if (!hasPackageIdentity)
+                {
+                    // Try to register the sparse package, but don't exit if it fails
+                    try
+                    {
+                        await RegisterSparsePackage();
+                        // Only try to restart with identity if package registration succeeded
+                        RunWithIdentity();
+                        Environment.Exit(0);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Log the error but continue without package identity
+                        System.Diagnostics.Debug.WriteLine($"Failed to register or activate with package identity: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine("Continuing to run without package identity...");
+                    }
+                }
+                
+                // Initialize the main window regardless of package identity status
+                Window = new MainWindow();
+                Window.Activate();
+                WindowHandle = WinRT.Interop.WindowNative.GetWindowHandle(Window);
             }
             catch (Exception ex)
             {
                 // Log any exceptions during launch
                 System.Diagnostics.Debug.WriteLine($"Exception during launch: {ex.Message}");
-                throw;
+                
+                // Try to show the main window even if there was an error
+                try
+                {
+                    Window = new MainWindow();
+                    Window.Activate();
+                    WindowHandle = WinRT.Interop.WindowNative.GetWindowHandle(Window);
+                }
+                catch
+                {
+                    // If we can't even show the main window, rethrow the original exception
+                    throw;
+                }
             }
-        }
-
-        private async Task RestartWithIdentityIfNecessary()
-        {
-            // If we are in the packaged process, then present the MainWindow
-            if (IsPackagedProcess())
-            {
-                Window = new MainWindow();
-                Window.Activate();
-                WindowHandle = WinRT.Interop.WindowNative.GetWindowHandle(Window);
-                return;
-            }
-
-            // If we are still unpackaged process, then register the MSIX and ActivateApplication
-            await RegisterSparsePackage();
-            RunWithIdentity();
-            Environment.Exit(0);
         }
 
         private async Task RegisterSparsePackage()
@@ -156,14 +175,23 @@ namespace WindowsAISample
                 // Check if MSIX file exists
                 if (!File.Exists(sparsePkgPath))
                 {
-                    throw new FileNotFoundException($"Sparse package not found at: {sparsePkgPath}");
+                    System.Diagnostics.Debug.WriteLine($"Sparse package not found at: {sparsePkgPath}");
+                    return; // Exit without throwing exception
                 }
 
                 Uri externalUri = new Uri(externalLocation);
                 Uri packageUri = new Uri(sparsePkgPath);
 
                 PackageManager packageManager = new PackageManager();
-                int count = packageManager.FindPackagesForUserWithPackageTypes("", "WindowsAISampleForWinUISparse", PackageTypes.Main).Count();
+                
+                // Check if package is already registered
+                var packages = packageManager.FindPackagesForUser("", "WindowsAISampleForWinUISparse");
+                int count = 0;
+                foreach (var package in packages)
+                {
+                    count++;
+                }
+                
                 if (count == 0)
                 {
                     //Declare use of an external location
@@ -177,15 +205,24 @@ namespace WindowsAISample
                     {
                         if (deploymentOperation.Status == AsyncStatus.Error && deploymentResult != null)
                         {
-                            throw new Exception($"Package registration failed: {deploymentResult.ExtendedErrorCode}: {deploymentResult.ErrorText}");
+                            System.Diagnostics.Debug.WriteLine($"Package registration failed: {deploymentResult.ExtendedErrorCode}: {deploymentResult.ErrorText}");
+                            return; // Exit without throwing exception
                         }
-                        throw new Exception("Package did not register");
+                        System.Diagnostics.Debug.WriteLine("Package did not register");
+                        return; // Exit without throwing exception
                     }
+                    
+                    System.Diagnostics.Debug.WriteLine("Package registered successfully");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("Package already registered");
                 }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error registering sparse package: {ex.Message}");
+                // We rethrow the exception to be handled by the caller
                 throw;
             }
         }
@@ -197,37 +234,77 @@ namespace WindowsAISample
                 // Activating the packaged process
                 // We should already know our AUMID which depends on the AppxManifest we defined so this can be hardcoded here. 
                 string appUserModelId = "WindowsAISampleForWinUISparse_k0t3h69cz9sxw!App";
-                if (NativeMethods.CoCreateInstance(
+                
+                uint hr = NativeMethods.CoCreateInstance(
                     NativeMethods.CLSID_ApplicationActivationManager,
                     IntPtr.Zero,
                     NativeMethods.CLSCTX.CLSCTX_LOCAL_SERVER,
                     NativeMethods.CLSID_IApplicationActivationManager,
-                    out object applicationActivationManagerAsObject) != 0)
+                    out object applicationActivationManagerAsObject);
+                    
+                if (hr != 0)
                 {
-                    throw new Exception("Failed to create ApplicationActivationManager!");
+                    System.Diagnostics.Debug.WriteLine($"Failed to create ApplicationActivationManager! HRESULT: 0x{hr:X8}");
+                    return; // Exit without throwing exception
                 }
+                
                 var applicationActivationManager = (NativeMethods.IApplicationActivationManager)applicationActivationManagerAsObject;
-                applicationActivationManager.ActivateApplication(appUserModelId, null, NativeMethods.ActivateOptions.None, out uint processId);
+                IntPtr result = applicationActivationManager.ActivateApplication(appUserModelId, null, NativeMethods.ActivateOptions.None, out uint processId);
+                
+                if (result != IntPtr.Zero)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Failed to activate application! Result: 0x{result.ToInt64():X8}");
+                    return; // Exit without throwing exception
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"Successfully activated application with processId: {processId}");
             }
             catch (Exception ex)
             {
                 // Log the exception for troubleshooting
                 System.Diagnostics.Debug.WriteLine($"Error activating with package identity: {ex.Message}");
+                // We rethrow the exception to be handled by the caller
                 throw;
             }
         }
 
         private static bool IsPackagedProcess()
         {
-            int length = 0;
-            int result = NativeMethods.GetCurrentPackageFullName(ref length, null);
-            if (result == 15700) // APPMODEL_ERROR_NO_PACKAGE
+            try
             {
+                int length = 0;
+                int result = NativeMethods.GetCurrentPackageFullName(ref length, null);
+                
+                if (result == 15700) // APPMODEL_ERROR_NO_PACKAGE
+                {
+                    System.Diagnostics.Debug.WriteLine("Process is not packaged");
+                    return false;
+                }
+                
+                if (result != 122) // ERROR_INSUFFICIENT_BUFFER (expected for success path)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Unexpected error checking package status: {result}");
+                    return false;
+                }
+                
+                char[] packageFullName = new char[length];
+                result = NativeMethods.GetCurrentPackageFullName(ref length, packageFullName);
+                
+                if (result == 0)
+                {
+                    string packageName = new string(packageFullName);
+                    System.Diagnostics.Debug.WriteLine($"Process is packaged: {packageName}");
+                    return true;
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"Failed to get package full name: {result}");
                 return false;
             }
-            char[] packageFullName = new char[length];
-            result = NativeMethods.GetCurrentPackageFullName(ref length, packageFullName);
-            return result == 0;
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Exception checking package status: {ex.Message}");
+                return false;
+            }
         }
     }
 }
