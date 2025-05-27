@@ -97,6 +97,16 @@ namespace WindowsAISample
         public App()
         {
             this.InitializeComponent();
+            
+            // Add global exception handler
+            this.UnhandledException += App_UnhandledException;
+        }
+
+        private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+        {
+            // Log unhandled exceptions
+            System.Diagnostics.Debug.WriteLine($"Unhandled exception: {e.Message}, {e.Exception}");
+            e.Handled = true; // Mark as handled to prevent app crash
         }
 
         /// <summary>
@@ -105,7 +115,16 @@ namespace WindowsAISample
         /// <param name="args">Details about the launch request and process.</param>
         protected override async void OnLaunched(LaunchActivatedEventArgs args)
         {
-            await RestartWithIdentityIfNecessary();
+            try
+            {
+                await RestartWithIdentityIfNecessary();
+            }
+            catch (Exception ex)
+            {
+                // Log any exceptions during launch
+                System.Diagnostics.Debug.WriteLine($"Exception during launch: {ex.Message}");
+                throw;
+            }
         }
 
         private async Task RestartWithIdentityIfNecessary()
@@ -127,52 +146,75 @@ namespace WindowsAISample
 
         private async Task RegisterSparsePackage()
         {
-            // We expect the MSIX to be in the same directory as the exe. 
-            string exePath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
-            string externalLocation = exePath;
-            string sparsePkgPath = Path.Combine(exePath, "WindowsAISampleForWinUISparse.msix");
-
-            Uri externalUri = new Uri(externalLocation);
-            Uri packageUri = new Uri(sparsePkgPath);
-
-            PackageManager packageManager = new PackageManager();
-            int count = packageManager.FindPackagesForUserWithPackageTypes("", "WindowsAISampleForWinUISparse", PackageTypes.Main).Count();
-            if (count == 0)
+            try
             {
-                //Declare use of an external location
-                var options = new AddPackageOptions();
-                options.ExternalLocationUri = externalUri;
+                // We expect the MSIX to be in the same directory as the exe. 
+                string exePath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+                string externalLocation = exePath;
+                string sparsePkgPath = Path.Combine(exePath, "WindowsAISampleForWinUISparse.msix");
 
-                var deploymentOperation = packageManager.AddPackageByUriAsync(packageUri, options);
-                var deploymentResult = await deploymentOperation;
+                // Check if MSIX file exists
+                if (!File.Exists(sparsePkgPath))
+                {
+                    throw new FileNotFoundException($"Sparse package not found at: {sparsePkgPath}");
+                }
 
-                if (deploymentOperation.Status == AsyncStatus.Completed)
+                Uri externalUri = new Uri(externalLocation);
+                Uri packageUri = new Uri(sparsePkgPath);
+
+                PackageManager packageManager = new PackageManager();
+                int count = packageManager.FindPackagesForUserWithPackageTypes("", "WindowsAISampleForWinUISparse", PackageTypes.Main).Count();
+                if (count == 0)
                 {
-                    return;
+                    //Declare use of an external location
+                    var options = new AddPackageOptions();
+                    options.ExternalLocationUri = externalUri;
+
+                    var deploymentOperation = packageManager.AddPackageByUriAsync(packageUri, options);
+                    var deploymentResult = await deploymentOperation;
+
+                    if (deploymentOperation.Status != AsyncStatus.Completed)
+                    {
+                        if (deploymentOperation.Status == AsyncStatus.Error && deploymentResult != null)
+                        {
+                            throw new Exception($"Package registration failed: {deploymentResult.ExtendedErrorCode}: {deploymentResult.ErrorText}");
+                        }
+                        throw new Exception("Package did not register");
+                    }
                 }
-                else
-                {
-                    throw new Exception("Package did not register");
-                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error registering sparse package: {ex.Message}");
+                throw;
             }
         }
 
         private void RunWithIdentity()
         {
-            // Activating the packaged process
-            // We should already know our AUMID which depends on the AppxManifest we defined so this can be hardcoded here. 
-            string appUserModelId = "WindowsAISampleForWinUISparse_k0t3h69cz9sxw!App";
-            if (NativeMethods.CoCreateInstance(
-                NativeMethods.CLSID_ApplicationActivationManager,
-                IntPtr.Zero,
-                NativeMethods.CLSCTX.CLSCTX_LOCAL_SERVER,
-                NativeMethods.CLSID_IApplicationActivationManager,
-                out object applicationActivationManagerAsObject) != 0)
+            try
             {
-                throw new Exception("Failed to create ApplicationActivationManager!");
+                // Activating the packaged process
+                // We should already know our AUMID which depends on the AppxManifest we defined so this can be hardcoded here. 
+                string appUserModelId = "WindowsAISampleForWinUISparse_k0t3h69cz9sxw!App";
+                if (NativeMethods.CoCreateInstance(
+                    NativeMethods.CLSID_ApplicationActivationManager,
+                    IntPtr.Zero,
+                    NativeMethods.CLSCTX.CLSCTX_LOCAL_SERVER,
+                    NativeMethods.CLSID_IApplicationActivationManager,
+                    out object applicationActivationManagerAsObject) != 0)
+                {
+                    throw new Exception("Failed to create ApplicationActivationManager!");
+                }
+                var applicationActivationManager = (NativeMethods.IApplicationActivationManager)applicationActivationManagerAsObject;
+                applicationActivationManager.ActivateApplication(appUserModelId, null, NativeMethods.ActivateOptions.None, out uint processId);
             }
-            var applicationActivationManager = (NativeMethods.IApplicationActivationManager)applicationActivationManagerAsObject;
-            applicationActivationManager.ActivateApplication(appUserModelId, null, NativeMethods.ActivateOptions.None, out uint processId);
+            catch (Exception ex)
+            {
+                // Log the exception for troubleshooting
+                System.Diagnostics.Debug.WriteLine($"Error activating with package identity: {ex.Message}");
+                throw;
+            }
         }
 
         private static bool IsPackagedProcess()
