@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <algorithm>
 #include <cwctype>
 #include <iostream>
@@ -32,11 +33,12 @@
 #include "formatters.h"
 
 bool ProcessArgs(std::vector<std::wstring_view> const& args, std::wstring& prompt, bool& useProgress,
-                 std::wstring& imagePath, uint32_t& imageScale, std::wstring& videoFilePath);
+                 std::wstring& imagePath, uint32_t& imageScale, std::wstring& videoFilePath, int& rangeMode,
+                 bool& useOcr);
 int RunImageScaler(std::wstring const& imagePath, uint32_t scale);
-int RunVideoFile(std::wstring const& inPath, std::wstring const& outPath, uint32_t scale);
+int RunImageOcr(std::wstring const& imagePath);
+int RunVideoFile(std::wstring const& inPath, std::wstring const& outPath, uint32_t scale, int rangeMode);
 std::string_view LanguageModelHintFor(uint32_t hr);
-void UnlockLanguageModelFeature();
 
 int wmain(int argc, wchar_t* argv[])
 try
@@ -50,7 +52,9 @@ try
     std::wstring videoFilePath;
     uint32_t imageScale = 4;
     bool useProgress = false;
-    if (!ProcessArgs({argv + 1, argv + argc}, prompt, useProgress, imagePath, imageScale, videoFilePath))
+    bool useOcr = false;
+    int rangeMode = 0; // 0=auto, 1=full, 2=limited (video color/nominal range)
+    if (!ProcessArgs({argv + 1, argv + argc}, prompt, useProgress, imagePath, imageScale, videoFilePath, rangeMode, useOcr))
     {
         return 0;
     }
@@ -59,7 +63,7 @@ try
     // Otherwise, fall through to the original LanguageModel storyteller demo.
     if (!imagePath.empty())
     {
-        return RunImageScaler(imagePath, imageScale);
+        return useOcr ? RunImageOcr(imagePath) : RunImageScaler(imagePath, imageScale);
     }
     if (!videoFilePath.empty())
     {
@@ -67,20 +71,13 @@ try
         std::wstring outPath = (dot == std::wstring::npos)
             ? videoFilePath + L"_vsr.mp4"
             : videoFilePath.substr(0, dot) + L"_vsr.mp4";
-        return RunVideoFile(videoFilePath, outPath, imageScale);
+        return RunVideoFile(videoFilePath, outPath, imageScale, rangeMode);
     }
 
     if (prompt.empty())
     {
         prompt = L"Where did my treasures go?";
     }
-
-    // On the stable Windows App SDK channel, the LanguageModel (Phi Silica) APIs are a
-    // Limited Access Feature (LAF). Unlock it with the token Microsoft issued for this app
-    // identity before using the model. The token is read from the LAF_LANGUAGEMODEL_TOKEN
-    // environment variable so it is never committed to source. Request a token for your own
-    // app at https://aka.ms/laffeatures. (Experimental releases do not require a LAF token.)
-    UnlockLanguageModelFeature();
 
     try
     {
@@ -164,8 +161,7 @@ std::string_view LanguageModelHintFor(uint32_t hr)
     switch (hr)
     {
     case 0x80070005: // E_ACCESSDENIED
-        return "E_ACCESSDENIED: on current Learn docs, Phi Silica LanguageModel on stable releases "
-               "may require LAF access. Verify package identity, systemAIModels, and Phi Silica "
+        return "E_ACCESSDENIED: verify package identity, systemAIModels, and Phi Silica "
                "in AI Dev Gallery.";
     case 0x80040154: // REGDB_E_CLASSNOTREG
         return "REGDB_E_CLASSNOTREG: missing WinAppSDK framework package. Check the sparse "
@@ -175,45 +171,9 @@ std::string_view LanguageModelHintFor(uint32_t hr)
     }
 }
 
-// Unlocks the LanguageModel (Phi Silica) Limited Access Feature on the stable channel.
-// The token and publisher id are read from environment variables so no secret is committed
-// to source. If LAF_LANGUAGEMODEL_TOKEN is not set, this is a no-op and the model call will
-// surface its own access error (the most common case on the experimental channel, where no
-// LAF token is required). Request a token for your app at https://aka.ms/laffeatures.
-void UnlockLanguageModelFeature()
-{
-    wchar_t token[256]{};
-    if (GetEnvironmentVariableW(L"LAF_LANGUAGEMODEL_TOKEN", token, ARRAYSIZE(token)) == 0)
-    {
-        return; // No token configured; nothing to unlock here.
-    }
-
-    wchar_t publisherId[128]{};
-    if (GetEnvironmentVariableW(L"LAF_LANGUAGEMODEL_PUBLISHER_ID", publisherId, ARRAYSIZE(publisherId)) == 0)
-    {
-        wcscpy_s(publisherId, L"the app publisher");
-    }
-
-    constexpr wchar_t featureId[] = L"com.microsoft.windows.ai.languagemodel";
-    auto usage = std::format(
-        L"{} has registered their use of {} with Microsoft and agrees to the terms of use.",
-        publisherId, featureId);
-
-    auto access = winrt::Windows::ApplicationModel::LimitedAccessFeatures::TryUnlockFeature(
-        featureId, token, usage);
-
-    using winrt::Windows::ApplicationModel::LimitedAccessFeatureStatus;
-    if ((access.Status() != LimitedAccessFeatureStatus::Available) &&
-        (access.Status() != LimitedAccessFeatureStatus::AvailableWithoutToken))
-    {
-        std::println(std::cerr, "LAF unlock for LanguageModel returned status: {}",
-                     static_cast<int>(access.Status()));
-    }
-}
-
-
 bool ProcessArgs(std::vector<std::wstring_view> const& args, std::wstring& prompt, bool& useProgress,
-                 std::wstring& imagePath, uint32_t& imageScale, std::wstring& videoFilePath)
+                 std::wstring& imagePath, uint32_t& imageScale, std::wstring& videoFilePath, int& rangeMode,
+                 bool& useOcr)
 {
     for (size_t i = 0; i < args.size(); ++i)
     {
@@ -221,6 +181,10 @@ bool ProcessArgs(std::vector<std::wstring_view> const& args, std::wstring& promp
         if (arg == L"--progress")
         {
             useProgress = true;
+        }
+        else if (arg == L"--ocr")
+        {
+            useOcr = true;
         }
         else if (arg == L"--image")
         {
@@ -244,11 +208,24 @@ bool ProcessArgs(std::vector<std::wstring_view> const& args, std::wstring& promp
                 catch (...) { /* keep default */ }
             }
         }
+        else if (arg == L"--range")
+        {
+            if (i + 1 < args.size())
+            {
+                auto value = std::wstring(args[++i]);
+                std::transform(value.begin(), value.end(), value.begin(),
+                               [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                if (value == L"full")         { rangeMode = 1; }
+                else if (value == L"limited") { rangeMode = 2; }
+                else                          { rangeMode = 0; } // auto (default)
+            }
+        }
         else if ((arg == L"--help") || (arg == L"-h"))
         {
             std::println(std::cout, "Usage: cmake-ai-generator [--progress] <prompt text>");
             std::println(std::cout, "       cmake-ai-generator --image <path> [--scale <factor>]");
-            std::println(std::cout, "       cmake-ai-generator --video <path> [--scale <factor>]");
+            std::println(std::cout, "       cmake-ai-generator --image <path> --ocr");
+            std::println(std::cout, "       cmake-ai-generator --video <path> [--scale <factor>] [--range <auto|full|limited>]");
             std::println(std::cout, "");
             std::println(std::cout, "  Storyteller mode (default):");
             std::println(std::cout, "    --progress             Show incremental progress updates.");
@@ -258,10 +235,18 @@ bool ProcessArgs(std::vector<std::wstring_view> const& args, std::wstring& promp
             std::println(std::cout, "    --image <path>         Upscale the given JPG/PNG/BMP via ImageScaler.");
             std::println(std::cout, "    --scale <factor>       Integer scale factor (default: 4).");
             std::println(std::cout, "                           Output is written as <name>_x<factor><ext>.");
+            std::println(std::cout, "    --ocr                  Instead, recognize text in the original image with TextRecognizer.");
+            std::println(std::cout, "                           Prints text to the console; does not upscale or save an image.");
             std::println(std::cout, "");
             std::println(std::cout, "  Video super-resolution mode:");
             std::println(std::cout, "    --video <path>         Upscale a whole video file via VideoScaler (writes <name>_vsr.mp4).");
             std::println(std::cout, "    --scale <factor>       Integer scale factor (default: 4).");
+            std::println(std::cout, "    --range <mode>         Source color/nominal range: auto (default), full, or limited.");
+            std::println(std::cout, "                           VideoScaler expects full-range input, so a limited/studio");
+            std::println(std::cout, "                           source is expanded to full (otherwise it looks washed out).");
+            std::println(std::cout, "                           'auto' trusts the file's range tag, and assumes limited when");
+            std::println(std::cout, "                           the tag is missing (common for H.264). Use 'full' for a");
+            std::println(std::cout, "                           genuinely full-range source so it is not over-expanded.");
             std::println(std::cout, "");
             std::println(std::cout, "  --help, -h              Show this help message.");
             return false;
@@ -270,6 +255,11 @@ bool ProcessArgs(std::vector<std::wstring_view> const& args, std::wstring& promp
         {
             prompt.append(L" ").append(arg);
         }
+    }
+
+    if (useOcr && (imagePath.empty() || !videoFilePath.empty()))
+    {
+        throw std::invalid_argument("--ocr requires --image <path> and cannot be used with --video.");
     }
 
     return true;
@@ -385,7 +375,7 @@ namespace ImageScalerMode
             std::println(std::cout, "  Package identity: NO (0x{:08X})",
                          static_cast<uint32_t>(ex.code()));
             std::println(std::cout,
-                         "    The ImageScaler API requires package identity. Register the "
+                         "    The Windows AI imaging APIs require package identity. Register the "
                          "sparse package via Add-AppxPackage before running this exe.");
             return false;
         }
@@ -485,6 +475,66 @@ namespace ImageScalerMode
         encoder.SetSoftwareBitmap(scaled);
         co_await encoder.FlushAsync();
         std::println(std::cout, "  Saved: {}", winrt::to_string(outFile.Path()));
+    }
+}
+
+int RunImageOcr(std::wstring const& imagePath)
+{
+    using namespace ImageScalerMode;
+    using winrt::Microsoft::Windows::AI::Imaging::TextRecognizer;
+    try
+    {
+        LogStep("OCR: Verifying package identity");
+        if (!ReportPackageIdentity())
+        {
+            return 2;
+        }
+
+        auto file = StorageFile::GetFileFromPathAsync(hstring(ResolveAbsolutePath(imagePath))).get();
+        auto stream = file.OpenAsync(FileAccessMode::Read).get();
+        auto decoder = BitmapDecoder::CreateAsync(stream).get();
+        auto bitmap = decoder.GetSoftwareBitmapAsync(
+            winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore).get();
+
+        LogStep("OCR: Preparing TextRecognizer");
+        if (TextRecognizer::GetReadyState() != AIFeatureReadyState::Ready)
+        {
+            auto ready = TextRecognizer::EnsureReadyAsync().get();
+            if (ready.Status() != AIFeatureReadyResultState::Success)
+            {
+                throw std::runtime_error(std::format(
+                    "TextRecognizer could not be made ready: status {}, HRESULT 0x{:08X}: {}",
+                    static_cast<int>(ready.Status()), static_cast<uint32_t>(ready.ExtendedError().value),
+                    winrt::to_string(ready.ErrorDisplayText())));
+            }
+        }
+
+        auto recognizer = TextRecognizer::CreateAsync().get();
+        auto image = winrt::Microsoft::Graphics::Imaging::ImageBuffer::CreateForSoftwareBitmap(bitmap);
+        LogStep("OCR: Recognizing text in the original image");
+        auto result = recognizer.RecognizeTextFromImage(image);
+        auto lines = result.Lines();
+        std::println(std::cout, "Recognized text:");
+        if (lines.empty())
+        {
+            std::println(std::cout, "(No text detected.)");
+        }
+        for (auto const& line : lines)
+        {
+            std::println(std::cout, "{}", line.Text());
+        }
+        return 0;
+    }
+    catch (hresult_error const& ex)
+    {
+        LogHResultError("RunImageOcr", ex);
+        return static_cast<int>(ex.code());
+    }
+    catch (std::exception const& ex)
+    {
+        std::println(std::cerr, "OCR failed: {}", ex.what());
+        return -1;
     }
 }
 

@@ -108,10 +108,26 @@ namespace
         check_hresult(CreateDirect3D11SurfaceFromDXGISurface(dxgiSurface.get(), inspectable.put()));
         return inspectable.as<IDirect3DSurface>();
     }
+
+    // Short name for an MFNominalRange value (the source video's color/nominal range).
+    std::string_view NominalRangeName(UINT32 r)
+    {
+        switch (r)
+        {
+        case MFNominalRange_0_255:  return "Full (0-255)";      // == MFNominalRange_Normal
+        case MFNominalRange_16_235: return "Limited (16-235)";  // == MFNominalRange_Wide, the studio default
+        case MFNominalRange_48_208: return "48-208";
+        case MFNominalRange_64_127: return "64-127";
+        default:                    return "Unknown/unspecified";
+        }
+    }
 }
 
 // Returns 0 on success.
-int RunVideoFile(std::wstring const& inPath, std::wstring const& outPath, uint32_t scale)
+// rangeMode selects how the source's color/nominal range is treated: 0=auto (trust the
+// file's tag), 1=full (0-255), 2=limited (16-235). VideoScaler expects full-range NV12
+// input, so a limited source must be expanded to full or its output looks washed out.
+int RunVideoFile(std::wstring const& inPath, std::wstring const& outPath, uint32_t scale, int rangeMode)
 {
     try
     {
@@ -138,7 +154,7 @@ int RunVideoFile(std::wstring const& inPath, std::wstring const& outPath, uint32
         check_hresult(MFCreateDXGIDeviceManager(&resetToken, dxgiManager.put()));
         check_hresult(dxgiManager->ResetDevice(d3dDevice.get(), resetToken));
 
-        LogStep("[Step 2/7] Preparing VideoScaler (NPU/GPU model)");
+        LogStep("[Step 2/7] Preparing VideoScaler");
         ExecutionProviderCatalog::GetDefault().EnsureAndRegisterCertifiedAsync().get();
         if (VideoScaler::GetReadyState() != AIFeatureReadyState::Ready)
         {
@@ -162,13 +178,92 @@ int RunVideoFile(std::wstring const& inPath, std::wstring const& outPath, uint32
         com_ptr<IMFSourceReader> reader;
         check_hresult(MFCreateSourceReaderFromURL(inPath.c_str(), readerAttribs.get(), reader.put()));
 
-        // Ask the reader to deliver NV12.
-        {
+        // Determine the source's declared color/nominal range so we can hand VideoScaler
+        // the full-range NV12 it expects. VideoScaler applies a full-range (0-255) YUV->RGB
+        // conversion internally; if we feed it a limited-range (16-235, studio) source
+        // unchanged, the result is washed out / low-contrast. Most broadcast and streaming
+        // H.264/HEVC is limited range, so this matters for real-world content.
+        // The range may live on the native (compressed) type or only surface on the decoded
+        // type, so probe both. Some decoders (notably H.264) leave it unspecified on both.
+        auto readRange = [](IMFMediaType* mt) -> UINT32 {
+            UINT32 r = MFNominalRange_Unknown;
+            if (mt) { mt->GetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, &r); }
+            return r;
+        };
+        auto setNv12 = [&](bool forceFullRange) {
             com_ptr<IMFMediaType> nv12;
             check_hresult(MFCreateMediaType(nv12.put()));
             check_hresult(nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
             check_hresult(nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+            if (forceFullRange)
+            {
+                check_hresult(nv12->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255));
+            }
             check_hresult(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, nv12.get()));
+        };
+        UINT32 nativeRange = MFNominalRange_Unknown;
+        {
+            com_ptr<IMFMediaType> native;
+            if (SUCCEEDED(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, native.put())))
+            {
+                nativeRange = readRange(native.get());
+            }
+        }
+        // Request NV12 (no forced range yet), then read back the decoded type to see whether
+        // the decoder surfaced a range there.
+        setNv12(false);
+        UINT32 decodedRange = MFNominalRange_Unknown;
+        {
+            com_ptr<IMFMediaType> probe;
+            if (SUCCEEDED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, probe.put())))
+            {
+                decodedRange = readRange(probe.get());
+            }
+        }
+        UINT32 sourceRange = (nativeRange != MFNominalRange_Unknown) ? nativeRange : decodedRange;
+
+        // Resolve the effective range from --range (rangeMode) and the source tag, then decide
+        // whether to expand to full. 'auto' trusts the tag; an untagged source is left as-is
+        // (assumed full) to avoid over-expanding genuinely full-range content.
+        bool expandToFull = false;
+        std::string_view rangeDecision;
+        if (rangeMode == 1) // --range full
+        {
+            rangeDecision = "forced full; passthrough";
+        }
+        else if (rangeMode == 2) // --range limited
+        {
+            expandToFull = true;
+            rangeDecision = "forced limited; expanding to full for VideoScaler";
+        }
+        else // auto
+        {
+            if (sourceRange == MFNominalRange_16_235)
+            {
+                expandToFull = true;
+                rangeDecision = "detected limited; expanding to full for VideoScaler";
+            }
+            else if (sourceRange == MFNominalRange_0_255)
+            {
+                rangeDecision = "detected full; passthrough";
+            }
+            else
+            {
+                // MF often cannot surface the range for H.264/HEVC (it stays Unknown even when
+                // the file is tagged limited). Studio/limited range is the video-standard
+                // default and covers most broadcast/streaming content, so assume it here.
+                expandToFull = true;
+                rangeDecision = "range untagged; assuming limited (studio) default and expanding "
+                                "to full (pass --range full if a full-range source looks over-contrasty)";
+            }
+        }
+        std::println(std::cout, "  Source nominal range: {}  ->  {}", NominalRangeName(sourceRange), rangeDecision);
+
+        // If we need full-range NV12, re-request it so the reader's advanced video processor
+        // expands a limited source up to full range before VideoScaler sees it.
+        if (expandToFull)
+        {
+            setNv12(true);
         }
 
         // Read back the negotiated frame geometry / rate.
